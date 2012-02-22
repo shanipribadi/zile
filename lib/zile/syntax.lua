@@ -65,13 +65,16 @@ local state = {
       -- Calculate the attributes for each cell of this line using a
       -- stack-machine with color push and pop operations.
       attrs = Array (linelen),
+
+      -- parser state for the current line
+      colors    = stack.new (),
+      pats      = stack.new {bp.grammar.patterns},
     }
 
     local bol    = buffer_start_of_line (bp, o)
     local eol    = bol + linelen
     local region = get_buffer_region (bp, {start = bol, finish = eol})
     local lexer  = {
-      grammar = bp.grammar,
       s       = tostring (region),
       syntax  = bp.syntax[n],
     }
@@ -105,8 +108,9 @@ local function leftmost_match (lexer, i, pats)
   local b, e, caps, matched
 
   for _,v in ipairs (pats) do
-    if v.match then
-      local _b, _e, _caps = v.match:exec (s, i + 1)
+    local match = v.rex or v.finish
+    if match then
+      local _b, _e, _caps = match:exec (s, i + 1)
       if _b and (not b or _b < b) then
         b, e, caps, matched = _b, _e, _caps, v
       end
@@ -121,30 +125,42 @@ end
 -- queueing color push and pop instructions as we go.
 -- @tparam table lexer syntax highlight matcher stat
 local function highlight (lexer)
-  local pats = lexer.grammar.patterns
+  local colors = lexer.syntax.colors
+  local pats   = lexer.syntax.pats
   local b, e, caps, matched
 
   local i = 0
   repeat
-    b, e, caps, matched = leftmost_match (lexer, i, pats)
+    b, e, caps, matched = leftmost_match (lexer, i, pats:top ())
     if b then
-      local attrs = lexer.syntax.attrs
+      local attrs, n = lexer.syntax.attrs, e + 1 - b
 
-      if matched.attrs then
-        attrs:set (b, matched.attrs, e + 1 - b)
+      if matched.colors then
+        attrs:set (b, matched.colors, n)
       end
       if caps and matched.captures then
-        for k, t in pairs (matched.captures) do
+        for k, v in pairs (matched.captures) do
           -- onig marks zero length captures with first > last
           local first, last = caps[(k * 2) -1], caps[k * 2]
 
-          if t.attrs and first and first < last then
-            attrs:set (first, t.attrs, last + 1 - first)
+          if v and first and first < last then
+            attrs:set (first, v, last + 1 - first)
           end
         end
       end
 
       i = e + 1
+
+      -- If there are subexpressions, push those on the pattern stack.
+      if matched.patterns then
+        attrs:set (b, colors:push (matched.colors), n)
+        pats:push (matched.patterns)
+      end
+
+      -- Pop completed subexpressions off the pattern stack
+      if matched.finish then
+        pats:pop ()
+      end
     end
   until b == nil
 
