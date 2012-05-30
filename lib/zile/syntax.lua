@@ -40,6 +40,8 @@ local Array       = require "zile.array"
 local compile_rex = require "zile.bundle".compile_rex
 local stack       = require "zile.lib".stack
 
+local compile_rex = require "zile.bundle".compile_rex
+
 
 -- Metamethods for syntax parsers state.
 local metatable = {
@@ -47,6 +49,14 @@ local metatable = {
     if not attr then return nil end
     local attrs = self.syntax.attrs
     attrs:set (b, attr, e + 1 - b)
+  end,
+
+  -- Return the current capture offsets.
+  -- @treturn table topmost captures table
+  -- @treturn string matching begin string
+  top_caps = function (self)
+    local top = self.syntax.caps:top ()
+    if top then return top.caps, top.begin end
   end,
 }
 
@@ -67,6 +77,7 @@ local state = {
       attrs = Array (linelen),
 
       -- parser state for the current line
+      caps      = stack.new {},
       colors    = stack.new (),
       pats      = stack.new {bp.grammar.patterns},
     }
@@ -96,6 +107,44 @@ local function rex_exec (rex, s, i)
 end
 
 
+--- Marshal 0-indexed offsets into 1-indexed string.sub API.
+-- @string s subject
+-- @int b substring beginning index
+-- @int e substring end index
+-- @treturn string substring of s from b to e
+local function string_sub (s, b, e)
+  return s:sub (b + 1, e + 1)
+end
+
+
+--- Expand back-references from pattern begin rule.
+-- Used to replace unexpanded backrefs in pattern.end expressions
+-- with captures from pattern.begin execution.
+-- @tparam table lexer syntax highlight matcher state
+-- @string match uncompiled match expression
+local function expand (lexer, match)
+  local begincaps, begin = lexer:top_caps ()
+
+  if not match or not begincaps then return nil end
+
+  local b, e = 0, 0
+  repeat
+    b, e = match:find ("\\.", e + 1)
+    if e then
+      local n = match:sub (e, e):match ("%d")
+      if n then
+        -- begincaps was adjusted to 0-based indexing by rex_exec.
+        local replace = string_sub (begin, begincaps[(n * 2) - 1], begincaps[n * 2])
+        match = match:sub (1, b - 1) .. replace .. match:sub (e + 1)
+        e = b + #replace -- skip over replace contents
+      end
+    end
+  until b == nil
+
+  return compile_rex (match)
+end
+
+
 --- Find the leftmost matching expression.
 -- @tparam table lexer syntax highlight matcher state
 -- @int i search start index
@@ -108,9 +157,9 @@ local function leftmost_match (lexer, i, pats)
   local b, e, caps, matched
 
   for _,v in ipairs (pats) do
-    local match = v.rex or v.finish
-    if match then
-      local _b, _e, _caps = match:exec (s, i + 1)
+    local rex = expand (lexer, v.match) or v.rex or v.finish
+    if rex then
+      local _b, _e, _caps = rex:exec (s, i + 1)
       if _b and (not b or _b < b) then
         b, e, caps, matched = _b, _e, _caps, v
       end
@@ -125,8 +174,9 @@ end
 -- queueing color push and pop instructions as we go.
 -- @tparam table lexer syntax highlight matcher stat
 local function highlight (lexer)
-  local colors = lexer.syntax.colors
-  local pats   = lexer.syntax.pats
+  local begincaps = lexer.syntax.caps
+  local colors    = lexer.syntax.colors
+  local pats      = lexer.syntax.pats
   local b, e, caps, matched
 
   local i = 0
@@ -154,12 +204,14 @@ local function highlight (lexer)
       -- If there are subexpressions, push those on the pattern stack.
       if matched.patterns then
         attrs:set (b, colors:push (matched.colors), n)
+        begincaps:push {caps = caps, begin = lexer.s}
         pats:push (matched.patterns)
       end
 
       -- Pop completed subexpressions off the pattern stack
       if matched.finish then
         pats:pop ()
+        begincaps:pop ()
       end
     end
   until b == nil
