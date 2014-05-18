@@ -124,7 +124,7 @@ local _functions = {
 
     local used = self.used
     if from < 0 then from = from + used + 1 end
-    assert (from > 0 and from <= used)
+    assert (from > 0 and from <= used, "from = "..tostring(from) .. ", used = "..tostring(used))
 
     local a, i = self.array, from + n - 1
     while i >= from do

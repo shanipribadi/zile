@@ -60,7 +60,7 @@ local function draw_line (line, startcol, wp, o, rp, highlight, cur_tab_width)
     if highlight and in_region (o, i, rp) then
       this_attr = colors.selection
     else
-      this_attr = attrs and attrs[i] or colors.normal
+      this_attr = attrs and attrs[i + 1] or colors.normal
     end
     if this_attr ~= last_attr then
       term_attrset (this_attr)

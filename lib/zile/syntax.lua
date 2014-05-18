@@ -36,21 +36,17 @@
 local table = require "std.table"
 local clone, empty = table.clone, table.empty
 
+local Array       = require "zile.array"
 local compile_rex = require "zile.bundle".compile_rex
 local stack       = require "zile.lib".stack
 
 
 -- Metamethods for syntax parsers state.
 local metatable = {
-  -- Queue a stack operation.
-  -- @string op "push" or "pop"
-  -- @int o offest into line
-  -- @int attr attribute to push or pop
-  push_op = function (self, op, o, attr)
+  set = function (self, b, e, attr)
     if not attr then return nil end
-    local st = self.syntax.ops
-    st[o] = st[o] or stack.new ()
-    st[o]:push { [op] = attr }
+    local attrs = self.syntax.attrs
+    attrs:set (b, attr, e + 1 - b)
   end,
 }
 
@@ -62,20 +58,17 @@ local state = {
   -- @int o offset into buffer bp
   -- @treturn table lexer for buffer line containing offset o
   new = function (bp, o)
-    local n = offset_to_line (bp, o)
+    local n       = offset_to_line (bp, o)
+    local linelen = buffer_line_len (bp, o)
 
     bp.syntax[n] = {
       -- Calculate the attributes for each cell of this line using a
       -- stack-machine with color push and pop operations.
-      attrs = {},
-      ops   = {},
-
-      -- parser state for the current line
-      highlight = stack.new (),
+      attrs = Array (linelen),
     }
 
     local bol    = buffer_start_of_line (bp, o)
-    local eol    = bol + buffer_line_len (bp, o)
+    local eol    = bol + linelen
     local region = get_buffer_region (bp, {start = bol, finish = eol})
     local lexer  = {
       grammar = bp.grammar,
@@ -109,65 +102,51 @@ end
 -- @treturn pattern matching pattern
 local function leftmost_match (lexer, i, pats)
   local s = lexer.s
-  local b, e, p
+  local b, e, caps, matched
 
   for _,v in ipairs (pats) do
     if v.match then
-      local _b, _e = rex_exec (v.match, s, i)
+      local _b, _e, _caps = v.match:exec (s, i + 1)
       if _b and (not b or _b < b) then
-        b, e, p = _b, _e, v
+        b, e, caps, matched = _b, _e, _caps, v
       end
     end
   end
 
-  return b, e, p
+  return b, e, caps, matched
 end
 
 
 --- Parse a string from left-to-right for matches against pats,
 -- queueing color push and pop instructions as we go.
 -- @tparam table lexer syntax highlight matcher stat
-local function parse (lexer)
+local function highlight (lexer)
   local pats = lexer.grammar.patterns
-  local b, e, p
+  local b, e, caps, matched
 
   local i = 0
   repeat
-    b, e, p = leftmost_match (lexer, i, pats)
+    b, e, caps, matched = leftmost_match (lexer, i, pats)
     if b then
-      lexer:push_op ("push", b, p.attrs)
-      lexer:push_op ("pop",  e, p.attrs)
+      local attrs = lexer.syntax.attrs
+
+      if matched.attrs then
+        attrs:set (b, matched.attrs, e + 1 - b)
+      end
+      if caps and matched.captures then
+        for k, t in pairs (matched.captures) do
+          -- onig marks zero length captures with first > last
+          local first, last = caps[(k * 2) -1], caps[k * 2]
+
+          if t.attrs and first and first < last then
+            attrs:set (first, t.attrs, last + 1 - first)
+          end
+        end
+      end
 
       i = e + 1
     end
   until b == nil
-end
-
-
---- Highlight s according to queued color operations.
--- @param lexer
--- @return lexer
-local function highlight (lexer)
-  parse (lexer)
-
-  local attrs, ops = lexer.syntax.attrs, lexer.syntax.ops
-  local highlight  = lexer.syntax.highlight
-
-  for i = 0, #lexer.s do
-    -- set the color at this position before it can be popped.
-    attrs[i] = highlight:top ()
-    for _,v in ipairs (ops[i] or {}) do
-      if v.push then
-        highlight:push (v.push)
-        -- but, override the initial color if a new one is pushed.
-        attrs[i] = highlight:top ()
-
-      elseif v.pop then
-        assert (v.pop == highlight:top ())
-        highlight:pop ()
-      end
-    end
-  end
 
   return lexer
 end
