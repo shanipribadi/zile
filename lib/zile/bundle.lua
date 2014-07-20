@@ -82,7 +82,7 @@ end
 -- Add a searcher that loads 'foo-bundle.lua' for `require "foo"` if
 -- none of the built-in searchers could find anything to load.
 package.loaders[#package.loaders] = function (name)
-  return searcher (name, function (name) return name:gsub ("%.lua", "-bundle.lua") end)
+  return searcher (name, function (name) return name:gsub ("%.lua$", "-bundle.lua") end)
 end
 
 
